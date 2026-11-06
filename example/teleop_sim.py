@@ -26,6 +26,9 @@ Usage:
     # Live Wuji Glove input via wuji_sdk
     mjpython teleop_sim.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
 
+    # MANO hand model sequence (parameters or joints)
+    mjpython teleop_sim.py --mano data/mano_sample.npz --hand right
+
 Input device types:
 - visionpro: Live VisionPro input
 - mediapipe_replay: Replay recorded MediaPipe hand tracking data
@@ -33,6 +36,7 @@ Input device types:
 - realsense: RealSense camera input with MediaPipe hand detection
 - zed: ZED camera input with MediaPipe hand detection
 - wuji_glove: Live Wuji Glove input via wuji_sdk
+- mano: MANO hand model sequence (.npz/.pkl of parameters or joints)
 """
 
 import argparse
@@ -54,6 +58,7 @@ from wuji_retargeting import Retargeter
 from utils.config_paths import resolve_mjcf_path, qpos_reorder_perm
 from input_devices.visionpro import VisionPro
 from input_devices.mediapipe_replay import MediaPipeReplay
+from input_devices.mano_device import ManoDevice
 try:
     from input_devices.video_mediapipe import VideoMediaPipe
 except ImportError:
@@ -138,6 +143,7 @@ def run_teleop(
     show_video: bool = False,
     device_name: str = "glove",
     glove_sn: str = "",
+    mano_path: str = "",
 ):
     """Run teleoperation with MuJoCo simulation.
 
@@ -154,6 +160,7 @@ def run_teleop(
         show_video: Whether to display video with MediaPipe landmarks overlay
         device_name: wuji_sdk device name for Wuji Glove (default "glove")
         glove_sn: Wuji Glove serial number (required when multiple Wuji devices online)
+        mano_path: Path to a MANO sequence (.npz/.pkl) for mano mode
     """
     hand_side = hand_side.lower()
     assert hand_side in {"right", "left"}, "hand_side must be 'right' or 'left'"
@@ -239,12 +246,20 @@ def run_teleop(
             show_video=show_video,
         ),
         "wuji_glove": create_wuji_glove_device,
+        "mano": lambda: ManoDevice(
+            source=mano_path,
+            hand_side=hand_side,
+            playback_speed=playback_speed,
+            loop=playback_loop,
+        ),
     }
     if input_device_type not in device_map:
         raise ValueError(f"Unknown input device type: {input_device_type}")
 
     if input_device_type == "mediapipe_replay" and not mediapipe_replay_path:
         raise ValueError("mediapipe_replay_path is required for mediapipe_replay mode")
+    if input_device_type == "mano" and not mano_path:
+        raise ValueError("mano_path is required for mano mode")
     if input_device_type == "video" and not video_path:
         raise ValueError("video_path is required for video mode")
     if input_device_type == "video" and VideoMediaPipe is None:
@@ -405,12 +420,15 @@ Examples:
 
     # Input device options
     parser.add_argument('--input', type=str, default=None,
-                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove'],
+                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove', 'mano'],
                         help='Input device type')
 
     # Shortcut options
     parser.add_argument('--play', type=str, default=None, metavar='FILE',
                         help='Play MediaPipe recording file (shortcut for --input mediapipe_replay)')
+    parser.add_argument('--mano', type=str, default=None, metavar='FILE',
+                        help='Play a MANO sequence, .npz/.pkl of parameters or joints '
+                             '(shortcut for --input mano)')
 
     # VisionPro options
     parser.add_argument('--ip', type=str, default='192.168.50.127',
@@ -452,8 +470,11 @@ Examples:
     input_device_type = args.input
     mediapipe_replay_path = ""
     video_path = ""
+    mano_path = args.mano or ""
 
-    if args.zed:
+    if args.mano:
+        input_device_type = "mano"
+    elif args.zed:
         input_device_type = "zed"
     elif args.realsense:
         input_device_type = "realsense"
@@ -475,6 +496,8 @@ Examples:
             args.config = 'config/adaptive_analytical_video.yaml'
         elif input_device_type == "wuji_glove":
             args.config = f'config/adaptive_analytical_wuji_glove_{args.hand}.yaml'
+        elif input_device_type == "mano":
+            args.config = 'config/adaptive_analytical_mano.yaml'
 
     # Validate paths
     if input_device_type == "mediapipe_replay" and not mediapipe_replay_path:
@@ -515,6 +538,7 @@ Examples:
         show_video=args.show_video,
         device_name=args.device_name,
         glove_sn=args.glove_sn,
+        mano_path=mano_path,
     )
 
     # Save recording if enabled

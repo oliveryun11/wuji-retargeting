@@ -19,3 +19,12 @@ MUJOCO_LOG.TXT
 # Temporary files
 *.tmp
 *.log
+
+# Virtualenvs
+.venv/
+venv/
+
+# MANO model files. The MANO licence forbids redistribution -- each user must
+# register at https://mano.is.tue.mpg.de and extract these themselves.
+example/data/mano/*.pkl
+example/data/mano/LICENSE.txt

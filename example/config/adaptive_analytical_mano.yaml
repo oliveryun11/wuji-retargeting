@@ -1,0 +1,82 @@
+# AdaptiveOptimizerAnalytical configuration for MANO input.
+#
+# MANO emits a 16-joint skeleton (+5 fingertip vertices) in metres; the device
+# layer reorders it to the MediaPipe 21-point layout, so this is an ordinary
+# config -- no MANO-specific optimizer behaviour.
+#
+# Derived from adaptive_analytical_avp.yaml. The only substantive change is
+# segment_scaling: MANO's mean-shape hand is ~5% smaller than the operator hand
+# in the AVP recording, per-segment ratios below, so the AVP scalings are
+# multiplied by the measured AVP/MANO ratio to land the targets in the range the
+# AVP parameters were tuned for.
+#
+# Those ratios assume the MANO *mean shape* (betas = 0). If you drive this with
+# real per-subject betas, re-check with:
+#     mjpython tuning_tool.py --play data/mano_sample.pkl --hand right \
+#         --config config/adaptive_analytical_mano.yaml
+# and compare the orange (input) and cyan (scaled target) skeletons.
+
+optimizer:
+  type: "AdaptiveOptimizerAnalytical"
+
+retarget:
+  # Huber loss thresholds
+  huber_delta: 2.0             # Position Huber threshold (cm)
+  huber_delta_dir: 0.5         # Direction Huber threshold
+
+  # Regularization.
+  # Raised from the AVP default of 0.04. The Wuji Hand pinky has a near-flat cost
+  # basin around mid-curl: on a smooth MANO sweep the pinky DIP was flipping ~58
+  # deg between consecutive frames while the input keypoints moved 0.18 cm and the
+  # cost did not improve (2.065 -> 2.089), i.e. SLSQP hopping between equivalent
+  # solutions rather than tracking. Measured on a 300-frame open/close/pinch sweep:
+  #   norm_delta  0.04 -> 58.2 deg worst frame-to-frame step, mean cost 2.091
+  #               0.20 -> 32.6 deg,                           mean cost 2.093
+  #               0.40 -> 22.3 deg,                           mean cost 2.096
+  #               0.80 -> 15.6 deg,                           mean cost 2.104
+  # 0.4 removes most of the jump for a 0.24% cost increase. Lower it toward 0.04
+  # if you need snappier response and can tolerate the occasional pinky snap.
+  norm_delta: 0.4
+
+  # TipDirVec parameters
+  w_pos: 1.0                   # Tip position weight (wrist → tip vectors)
+  w_dir: 10.0                  # Tip direction weight (link4 → tip vectors)
+  scaling: 1.0                 # Global scaling; per-segment scaling is below
+  project_tip_dir: false
+
+  # FullHandVec parameters
+  w_full_hand: 1.0
+  # [PIP, DIP, TIP] multipliers on the wrist→joint target vectors.
+  segment_scaling:
+    thumb:  [1.21, 1.20, 1.10]
+    index:  [1.11, 1.13, 1.11]
+    middle: [1.08, 1.09, 1.05]
+    ring:   [1.12, 1.09, 1.04]
+    pinky:  [1.19, 1.27, 1.24]
+
+  # Pinch distance thresholds (cm)
+  pinch_thresholds:
+    index:  { d1: 2.0, d2: 4.0 }
+    middle: { d1: 2.0, d2: 4.0 }
+    ring:   { d1: 2.0, d2: 4.0 }
+    pinky:  { d1: 2.0, d2: 4.0 }
+
+  # MANO already comes out in the MANO wrist convention that
+  # apply_mediapipe_transformations targets, so no rotation fixup is needed.
+  mediapipe_rotation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+
+  # MANO parameters are noise-free (model output, not a sensor), so this is not
+  # doing sensor denoising -- it is the second line of defence against the IK
+  # discontinuity described under norm_delta. Kept at the repo default of 0.2,
+  # which halves the residual worst-case step versus 0.5. Lower it further if
+  # your MANO estimates come from a per-frame image regressor, which is jitterier.
+  lp_alpha: 0.2
+
+render:
+  camera:
+    azimuth: 135
+    elevation: -20
+    distance: 0.5

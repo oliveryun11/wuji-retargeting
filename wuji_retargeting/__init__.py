@@ -16,10 +16,13 @@ Example:
 from .retarget import Retargeter
 from .opt import BaseOptimizer, LPFilter
 from .mediapipe import apply_mediapipe_transformations
+from .mano import ManoLayer, mano_joints_to_mediapipe
 
 __all__ = [
     "Retargeter",
     "BaseOptimizer",
     "LPFilter",
     "apply_mediapipe_transformations",
+    "ManoLayer",
+    "mano_joints_to_mediapipe",
 ]
