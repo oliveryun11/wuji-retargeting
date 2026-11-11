@@ -68,6 +68,11 @@ class SliderApp:
         self._rest = np.array([np.clip(0.0, lo, hi) for _, lo, hi in joints])
         # Commanded state, slew-limited toward the slider targets.
         self._current = self._rest.copy()
+        start = getattr(backend, "initial_qpos", None)
+        if start is not None:
+            lows = np.array([lo for _, lo, _ in joints])
+            highs = np.array([hi for _, _, hi in joints])
+            self._current = np.clip(start, lows, highs)
 
         self._vars = []
         self._value_labels = []

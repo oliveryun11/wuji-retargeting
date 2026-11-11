@@ -134,11 +134,13 @@ class WujiHandBackend:
         self._hand = (
             wujihandpy.Hand(serial_number=hand_serial) if hand_serial else wujihandpy.Hand()
         )
-        self._hand.write_joint_enabled(True)
+        self.initial_qpos = np.asarray(self._hand.read_joint_actual_position()).reshape(20)
         self._controller = self._hand.realtime_controller(
             enable_upstream=False,
             filter=wujihandpy.filter.LowPass(cutoff_freq=5.0),
         )
+        self._controller.set_joint_target_position(self.initial_qpos.reshape(5, 4))
+        self._hand.write_joint_enabled(True)
         time.sleep(0.5)
 
     def send(self, qpos: np.ndarray) -> None:
