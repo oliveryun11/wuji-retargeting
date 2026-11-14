@@ -77,6 +77,11 @@ try:
 except ImportError:
     WujiGloveDevice = None
     WUJI_SDK_AVAILABLE = False
+try:
+    # Needs the Rokoko Device SDK installed (for its rgmp_core client).
+    from input_devices.rokoko import RokokoDevice
+except ImportError:
+    RokokoDevice = None
 
 
 def run_tuning_mode(
@@ -252,7 +257,10 @@ def run_teleop(
             playback_speed=playback_speed,
             loop=playback_loop,
         ),
+        "rokoko": lambda: RokokoDevice(),
     }
+    if input_device_type == "rokoko" and RokokoDevice is None:
+        raise ImportError("rokoko input needs the Rokoko Device SDK (rgmp_core) installed")
     if input_device_type not in device_map:
         raise ValueError(f"Unknown input device type: {input_device_type}")
 
@@ -420,7 +428,7 @@ Examples:
 
     # Input device options
     parser.add_argument('--input', type=str, default=None,
-                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove', 'mano'],
+                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove', 'mano', 'rokoko'],
                         help='Input device type')
 
     # Shortcut options
