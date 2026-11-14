@@ -58,6 +58,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from wuji_retargeting import Retargeter
 from utils.config_paths import resolve_mjcf_path, mjcf_joint_order, qpos_reorder_perm
+from utils.joint_limits import load_joint_limits
 from input_devices.visionpro import VisionPro
 from input_devices.mediapipe_replay import MediaPipeReplay
 from input_devices.mano_device import ManoDevice
@@ -79,6 +80,11 @@ try:
 except ImportError:
     WujiGloveDevice = None
     WUJI_SDK_AVAILABLE = False
+try:
+    # Needs the Rokoko Device SDK installed (for its rgmp_core client).
+    from input_devices.rokoko import RokokoDevice
+except ImportError:
+    RokokoDevice = None
 
 
 # =============================================================================
@@ -425,6 +431,9 @@ def run_teleop(
     kp: float = 3.0,
     kd: float = 0.1,
     current_limit: float = 1.5,
+    # Command safety: joint speed cap and how far inside the URDF limits to stay.
+    max_joint_speed_deg: float = 60.0,
+    limit_margin_deg: float = 3.0,
 ):
     """Run teleoperation with real hardware.
 
@@ -503,7 +512,10 @@ def run_teleop(
             playback_speed=playback_speed,
             loop=playback_loop,
         ),
+        "rokoko": lambda: RokokoDevice(),
     }
+    if input_device_type == "rokoko" and RokokoDevice is None:
+        raise ImportError("rokoko input needs the Rokoko Device SDK (rgmp_core) installed")
     if input_device_type not in device_map:
         raise ValueError(f"Unknown input device type: {input_device_type}")
 
@@ -553,6 +565,24 @@ def run_teleop(
     else:
         print("qpos remap: identity (no optimizer.mjcf_path; Wuji Hand-style hand)")
 
+    # Safe command range: the URDF limits (same source as slider_control.py), shrunk
+    # by limit_margin_deg so commands stop short of the hard stops. Looked up by joint
+    # name in the retargeter's output order, then put into device order with the same
+    # remap applied to qpos.
+    urdf_limits = {name: (lo, hi) for name, lo, hi in load_joint_limits(hand_model, hand_side)}
+    joint_names = list(retargeter.optimizer.robot.dof_joint_names)
+    missing = [n for n in joint_names if n not in urdf_limits]
+    if missing:
+        raise ValueError(f"retargeter joints not found in the {hand_model} {hand_side} URDF: {missing}")
+    margin = np.radians(limit_margin_deg)
+    safe_lo = np.array([urdf_limits[n][0] for n in joint_names]) + margin
+    safe_hi = np.array([urdf_limits[n][1] for n in joint_names]) - margin
+    if _qpos_perm is not None:
+        safe_lo, safe_hi = safe_lo[_qpos_perm], safe_hi[_qpos_perm]
+    if np.any(safe_lo >= safe_hi):
+        raise ValueError(f"limit_margin_deg={limit_margin_deg} leaves no range on some joints")
+    max_speed = np.radians(max_joint_speed_deg)  # rad/s
+
     # Disable recording when using replay mode
     if input_device_type == "mediapipe_replay" and enable_recording:
         print("Note: Recording disabled in replay mode")
@@ -582,7 +612,17 @@ def run_teleop(
         print(f"  Hand: {hand_side}")
         print(f"  Input: {input_device_type}")
         print(f"  Recording: {'ON' if enable_recording else 'OFF'}")
+        print(f"  Max joint speed: {max_joint_speed_deg:.0f} deg/s, "
+              f"limit margin: {limit_margin_deg:.1f} deg")
         print("=" * 50)
+
+        # Slew limiter state, in device order. Starts from the hand's measured pose
+        # when the backend reports one (Wuji Hand), so the first command ramps
+        # instead of jumping. Wuji Hand 2 has no such read, so it starts at its
+        # first command, as before.
+        current = getattr(backend, "initial_qpos", None)
+        current = None if current is None else np.asarray(current, dtype=float).copy()
+        last_send = None
 
         frame_count = 0
         fps_start_time = time.time()
@@ -623,8 +663,24 @@ def run_teleop(
                 fps = frame_count / elapsed
                 print(f"FPS: {fps:.1f}")
 
+            # Device order, clipped inside the safe range.
+            target = qpos if _qpos_perm is None else qpos[_qpos_perm]
+            target = np.clip(target, safe_lo, safe_hi)
+
+            # Slew limit: move each joint at most max_speed * dt toward the target.
+            # dt is capped at 50 ms, so a pause (e.g. the glove dropping out, during
+            # which frames are skipped above) can't allow one big catch-up step.
+            now = time.monotonic()
+            if current is None:
+                current = target.copy()
+            else:
+                dt = 0.02 if last_send is None else min(now - last_send, 0.05)
+                step = max_speed * dt
+                current = current + np.clip(target - current, -step, step)
+            last_send = now
+
             # Send to hardware via backend (Wuji Hand or Wuji Hand 2, decided at init).
-            backend.send(qpos if _qpos_perm is None else qpos[_qpos_perm])
+            backend.send(current)
 
 
     except KeyboardInterrupt:
@@ -690,7 +746,7 @@ Examples:
 
     # Input device options
     parser.add_argument('--input', type=str, default=None,
-                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove', 'mano'],
+                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove', 'mano', 'rokoko'],
                         help='Input device type')
 
     # Shortcut options
@@ -749,6 +805,12 @@ Examples:
     # NOTE: per-joint calibration (sign/offset) is deliberately not exposed here —
     # an unvalidated sign flip / offset goes straight to the MIT controller on real
     # hardware (and can't be previewed in sim), which is unsafe as a user knob.
+
+    # Command safety
+    parser.add_argument('--max-joint-speed', type=float, default=60.0,
+                        help='Max commanded joint speed, deg/s (default: 60)')
+    parser.add_argument('--limit-margin', type=float, default=3.0,
+                        help='Stay this many degrees inside the URDF joint limits (default: 3)')
 
     args = parser.parse_args()
 
@@ -837,6 +899,8 @@ Examples:
         kp=args.kp,
         kd=args.kd,
         current_limit=args.current_limit,
+        max_joint_speed_deg=args.max_joint_speed,
+        limit_margin_deg=args.limit_margin,
     )
 
     # Save recording if enabled
